@@ -1,0 +1,11 @@
+.git
+.local
+.cache
+node_modules
+**/node_modules
+**/dist
+attached_assets
+artifacts/mockup-sandbox
+artifacts/finance-app/dist
+artifacts/api-server/dist
+*.log

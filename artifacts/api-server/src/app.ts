@@ -2,10 +2,16 @@ import express, { type Express } from "express";
 import cors from "cors";
 import session from "express-session";
 import pinoHttp from "pino-http";
+import path from "path";
 import router from "./routes";
 import { logger } from "./lib/logger";
 
+const isProduction = process.env.NODE_ENV === "production";
 const app: Express = express();
+
+if (isProduction) {
+  app.set("trust proxy", 1);
+}
 
 app.use(
   pinoHttp({
@@ -37,12 +43,20 @@ app.use(
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: false,
+      secure: isProduction,
       maxAge: 7 * 24 * 60 * 60 * 1000,
     },
   }),
 );
 
 app.use("/api", router);
+
+if (isProduction) {
+  const publicDir = path.resolve(process.cwd(), "public");
+  app.use(express.static(publicDir));
+  app.get("*", (_req, res) => {
+    res.sendFile(path.join(publicDir, "index.html"));
+  });
+}
 
 export default app;
