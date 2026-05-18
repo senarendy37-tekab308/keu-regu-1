@@ -1,13 +1,22 @@
 import { Router } from "express";
-import { db, categoriesTable } from "@workspace/db";
+import { db } from "../lib/firebase";
 import { CreateCategoryBody } from "@workspace/api-zod";
 import { requireAdmin } from "../middlewares/requireAdmin";
 
 const router = Router();
+const COLLECTION = "categories";
 
 router.get("/categories", async (_req, res) => {
-  const rows = await db.select().from(categoriesTable).orderBy(categoriesTable.name);
-  return res.json(rows);
+  try {
+    const snapshot = await db.collection(COLLECTION).orderBy("name").get();
+    const categories = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+    return res.json(categories);
+  } catch (error) {
+    return res.status(500).json({ error: "Failed to fetch categories" });
+  }
 });
 
 router.post("/categories", requireAdmin, async (req, res) => {
@@ -16,12 +25,13 @@ router.post("/categories", requireAdmin, async (req, res) => {
     return res.status(400).json({ error: "Invalid request body" });
   }
 
-  const [inserted] = await db
-    .insert(categoriesTable)
-    .values(parsed.data)
-    .returning();
-
-  return res.status(201).json(inserted);
+  try {
+    const docRef = await db.collection(COLLECTION).add(parsed.data);
+    const doc = await docRef.get();
+    return res.status(201).json({ id: doc.id, ...doc.data() });
+  } catch (error) {
+    return res.status(500).json({ error: "Failed to create category" });
+  }
 });
 
 export default router;

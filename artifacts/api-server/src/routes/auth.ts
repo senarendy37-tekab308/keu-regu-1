@@ -1,32 +1,31 @@
 import { Router } from "express";
+import { auth } from "../lib/firebase";
 
 const router = Router();
 
-router.get("/auth/me", (req, res) => {
-  const role = req.session?.role ?? "user";
-  return res.json({ role });
+router.get("/auth/me", async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith("Bearer ")) {
+    return res.json({ role: "user" });
+  }
+
+  const idToken = authHeader.split("Bearer ")[1];
+  try {
+    await auth.verifyIdToken(idToken);
+    return res.json({ role: "admin" });
+  } catch {
+    return res.json({ role: "user" });
+  }
 });
 
 router.post("/auth/login", (req, res) => {
-  const { password } = req.body as { password?: string };
-  const adminPassword = process.env.ADMIN_PASSWORD;
-
-  if (!adminPassword) {
-    return res.status(500).json({ error: "Admin password not configured" });
-  }
-
-  if (password === adminPassword) {
-    req.session.role = "admin";
-    return res.json({ role: "admin" });
-  }
-
-  return res.status(401).json({ error: "Password salah" });
+  // Login sekarang ditangani oleh Firebase SDK di frontend.
+  // Endpoint ini bisa dikosongkan atau diarahkan untuk verifikasi awal.
+  return res.status(400).json({ error: "Gunakan Firebase SDK di frontend untuk login" });
 });
 
 router.post("/auth/logout", (req, res) => {
-  req.session.destroy(() => {
-    res.json({ ok: true });
-  });
+  return res.json({ ok: true });
 });
 
 export default router;

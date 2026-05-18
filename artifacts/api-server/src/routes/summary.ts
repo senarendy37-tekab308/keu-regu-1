@@ -1,96 +1,107 @@
 import { Router } from "express";
-import { db, transactionsTable, categoriesTable } from "@workspace/db";
-import { eq, sql } from "drizzle-orm";
+import { db } from "../lib/firebase";
 
 const router = Router();
+const TRANSACTIONS = "transactions";
+const CATEGORIES = "categories";
 
 router.get("/summary", async (_req, res) => {
-  const rows = await db
-    .select({
-      type: transactionsTable.type,
-      total: sql<string>`COALESCE(SUM(${transactionsTable.amount}), 0)`,
-      count: sql<number>`COUNT(*)::int`,
-    })
-    .from(transactionsTable)
-    .groupBy(transactionsTable.type);
+  try {
+    const snapshot = await db.collection(TRANSACTIONS).get();
+    
+    let totalIncome = 0;
+    let totalExpense = 0;
+    let transactionCount = 0;
 
-  let totalIncome = 0;
-  let totalExpense = 0;
-  let transactionCount = 0;
+    snapshot.docs.forEach(doc => {
+      const data = doc.data();
+      const amount = parseFloat(data.amount);
+      if (data.type === "income") totalIncome += amount;
+      if (data.type === "expense") totalExpense += amount;
+      transactionCount++;
+    });
 
-  for (const row of rows) {
-    if (row.type === "income") totalIncome = parseFloat(row.total);
-    if (row.type === "expense") totalExpense = parseFloat(row.total);
-    transactionCount += row.count;
+    return res.json({
+      balance: totalIncome - totalExpense,
+      totalIncome,
+      totalExpense,
+      transactionCount,
+    });
+  } catch (error) {
+    return res.status(500).json({ error: "Failed to generate summary" });
   }
-
-  return res.json({
-    balance: totalIncome - totalExpense,
-    totalIncome,
-    totalExpense,
-    transactionCount,
-  });
 });
 
 router.get("/summary/by-category", async (_req, res) => {
-  const rows = await db
-    .select({
-      categoryId: transactionsTable.categoryId,
-      categoryName: sql<string>`COALESCE(${categoriesTable.name}, 'Tidak Berkategori')`,
-      color: sql<string>`COALESCE(${categoriesTable.color}, '#94a3b8')`,
-      total: sql<string>`SUM(${transactionsTable.amount})`,
-    })
-    .from(transactionsTable)
-    .leftJoin(categoriesTable, eq(transactionsTable.categoryId, categoriesTable.id))
-    .where(eq(transactionsTable.type, "expense"))
-    .groupBy(transactionsTable.categoryId, categoriesTable.name, categoriesTable.color);
+  try {
+    const [transactionsSnapshot, categoriesSnapshot] = await Promise.all([
+      db.collection(TRANSACTIONS).where("type", "==", "expense").get(),
+      db.collection(CATEGORIES).get()
+    ]);
 
-  const totalExpense = rows.reduce((acc, r) => acc + parseFloat(r.total), 0);
+    const categoriesMap = new Map(
+      categoriesSnapshot.docs.map(doc => [doc.id, { name: doc.data().name, color: doc.data().color }])
+    );
 
-  return res.json(
-    rows.map((r) => ({
-      categoryId: r.categoryId,
-      categoryName: r.categoryName,
-      color: r.color,
-      total: parseFloat(r.total),
-      percentage: totalExpense > 0 ? (parseFloat(r.total) / totalExpense) * 100 : 0,
-    }))
-  );
+    const categoryStats = new Map<string, number>();
+    let totalExpense = 0;
+
+    transactionsSnapshot.docs.forEach(doc => {
+      const data = doc.data();
+      const amount = parseFloat(data.amount);
+      const catId = data.categoryId || "null";
+      categoryStats.set(catId, (categoryStats.get(catId) || 0) + amount);
+      totalExpense += amount;
+    });
+
+    const result = Array.from(categoryStats.entries()).map(([catId, total]) => {
+      const category = categoriesMap.get(catId);
+      return {
+        categoryId: catId === "null" ? null : catId,
+        categoryName: category?.name || "Tidak Berkategori",
+        color: category?.color || "#94a3b8",
+        total,
+        percentage: totalExpense > 0 ? (total / totalExpense) * 100 : 0,
+      };
+    });
+
+    return res.json(result);
+  } catch (error) {
+    return res.status(500).json({ error: "Failed to generate category summary" });
+  }
 });
 
 router.get("/summary/monthly", async (_req, res) => {
-  const rows = await db
-    .select({
-      month: sql<number>`EXTRACT(MONTH FROM ${transactionsTable.date}::date)::int`,
-      year: sql<number>`EXTRACT(YEAR FROM ${transactionsTable.date}::date)::int`,
-      type: transactionsTable.type,
-      total: sql<string>`SUM(${transactionsTable.amount})`,
-    })
-    .from(transactionsTable)
-    .where(
-      sql`${transactionsTable.date}::date >= NOW() - INTERVAL '6 months'`
-    )
-    .groupBy(
-      sql`EXTRACT(YEAR FROM ${transactionsTable.date}::date)`,
-      sql`EXTRACT(MONTH FROM ${transactionsTable.date}::date)`,
-      transactionsTable.type
-    )
-    .orderBy(
-      sql`EXTRACT(YEAR FROM ${transactionsTable.date}::date)`,
-      sql`EXTRACT(MONTH FROM ${transactionsTable.date}::date)`
+  try {
+    // Ambil data 6 bulan terakhir (sederhananya ambil semua untuk demo, 
+    // atau pakai filter date >= sixMonthsAgo)
+    const snapshot = await db.collection(TRANSACTIONS).get();
+
+    const map = new Map<string, { month: number; year: number; income: number; expense: number }>();
+    
+    snapshot.docs.forEach(doc => {
+      const data = doc.data();
+      const date = new Date(data.date);
+      const month = date.getMonth() + 1;
+      const year = date.getFullYear();
+      const key = `${year}-${month}`;
+      
+      if (!map.has(key)) map.set(key, { month, year, income: 0, expense: 0 });
+      const entry = map.get(key)!;
+      const amount = parseFloat(data.amount);
+      if (data.type === "income") entry.income += amount;
+      if (data.type === "expense") entry.expense += amount;
+    });
+
+    // Sort by year and month
+    const result = Array.from(map.values()).sort((a, b) => 
+      (a.year * 100 + a.month) - (b.year * 100 + b.month)
     );
 
-  // Merge income and expense per month
-  const map = new Map<string, { month: number; year: number; income: number; expense: number }>();
-  for (const row of rows) {
-    const key = `${row.year}-${row.month}`;
-    if (!map.has(key)) map.set(key, { month: row.month, year: row.year, income: 0, expense: 0 });
-    const entry = map.get(key)!;
-    if (row.type === "income") entry.income = parseFloat(row.total);
-    if (row.type === "expense") entry.expense = parseFloat(row.total);
+    return res.json(result.slice(-6)); // Ambil 6 bulan terakhir
+  } catch (error) {
+    return res.status(500).json({ error: "Failed to generate monthly summary" });
   }
-
-  return res.json(Array.from(map.values()));
 });
 
 export default router;

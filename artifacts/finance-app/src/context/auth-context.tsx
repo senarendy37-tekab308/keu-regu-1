@@ -1,65 +1,64 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
+import { auth } from "../lib/firebase";
+import { signInWithEmailAndPassword, signOut, onAuthStateChanged, User } from "firebase/auth";
+import { setAuthTokenGetter } from "@workspace/api-client-react";
 
 type Role = "admin" | "user";
 
 interface AuthState {
+  user: User | null;
   role: Role;
   isLoading: boolean;
   isAdmin: boolean;
-  login: (password: string) => Promise<{ ok: boolean; error?: string }>;
+  login: (email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
   logout: () => Promise<void>;
+  getToken: () => Promise<string | null>;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const [user, setUser] = useState<User | null>(null);
   const [role, setRole] = useState<Role>("user");
   const [isLoading, setIsLoading] = useState(true);
 
-  const fetchMe = useCallback(async () => {
-    try {
-      const res = await fetch("/api/auth/me", { credentials: "include" });
-      if (res.ok) {
-        const data = await res.json() as { role: Role };
-        setRole(data.role);
-      }
-    } catch {
-      setRole("user");
-    } finally {
-      setIsLoading(false);
-    }
+  const getToken = useCallback(async () => {
+    if (!auth.currentUser) return null;
+    return await auth.currentUser.getIdToken();
   }, []);
 
   useEffect(() => {
-    fetchMe();
-  }, [fetchMe]);
+    setAuthTokenGetter(getToken);
+  }, [getToken]);
 
-  const login = useCallback(async (password: string) => {
-    try {
-      const res = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ password }),
-      });
-      const data = await res.json() as { role?: Role; error?: string };
-      if (res.ok && data.role) {
-        setRole(data.role);
-        return { ok: true };
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setUser(user);
+      if (user) {
+        setRole("admin");
+      } else {
+        setRole("user");
       }
-      return { ok: false, error: data.error ?? "Login gagal" };
-    } catch {
-      return { ok: false, error: "Gagal terhubung ke server" };
+      setIsLoading(false);
+    });
+    return unsubscribe;
+  }, []);
+
+  const login = useCallback(async (email: string, password: string) => {
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
+      return { ok: true };
+    } catch (error: any) {
+      return { ok: false, error: error.message || "Login gagal" };
     }
   }, []);
 
   const logout = useCallback(async () => {
-    await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
-    setRole("user");
+    await signOut(auth);
   }, []);
 
   return (
-    <AuthContext.Provider value={{ role, isLoading, isAdmin: role === "admin", login, logout }}>
+    <AuthContext.Provider value={{ user, role, isLoading, isAdmin: role === "admin", login, logout, getToken }}>
       {children}
     </AuthContext.Provider>
   );

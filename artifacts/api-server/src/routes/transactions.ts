@@ -1,6 +1,5 @@
 import { Router } from "express";
-import { db, transactionsTable, categoriesTable } from "@workspace/db";
-import { eq, desc, and } from "drizzle-orm";
+import { db, Timestamp } from "../lib/firebase";
 import {
   CreateTransactionBody,
   ListTransactionsQueryParams,
@@ -10,6 +9,8 @@ import {
 import { requireAdmin } from "../middlewares/requireAdmin";
 
 const router = Router();
+const COLLECTION = "transactions";
+const CATEGORIES_COLLECTION = "categories";
 
 router.get("/transactions", async (req, res) => {
   const parsed = ListTransactionsQueryParams.safeParse(req.query);
@@ -18,34 +19,39 @@ router.get("/transactions", async (req, res) => {
   }
 
   const { type, categoryId, limit } = parsed.data;
-  const conditions = [];
+  let query: any = db.collection(COLLECTION);
 
-  if (type) conditions.push(eq(transactionsTable.type, type));
-  if (categoryId != null) conditions.push(eq(transactionsTable.categoryId, categoryId));
+  if (type) query = query.where("type", "==", type);
+  if (categoryId != null) query = query.where("categoryId", "==", String(categoryId));
 
-  const rows = await db
-    .select({
-      id: transactionsTable.id,
-      amount: transactionsTable.amount,
-      type: transactionsTable.type,
-      description: transactionsTable.description,
-      date: transactionsTable.date,
-      categoryId: transactionsTable.categoryId,
-      categoryName: categoriesTable.name,
-      createdAt: transactionsTable.createdAt,
-    })
-    .from(transactionsTable)
-    .leftJoin(categoriesTable, eq(transactionsTable.categoryId, categoriesTable.id))
-    .where(conditions.length > 0 ? and(...conditions) : undefined)
-    .orderBy(desc(transactionsTable.date), desc(transactionsTable.createdAt))
-    .limit(limit ?? 100);
+  query = query.orderBy("date", "desc").orderBy("createdAt", "desc").limit(limit ?? 100);
 
-  return res.json(
-    rows.map((r) => ({
-      ...r,
-      amount: parseFloat(r.amount),
-    }))
-  );
+  try {
+    const [snapshot, categoriesSnapshot] = await Promise.all([
+      query.get(),
+      db.collection(CATEGORIES_COLLECTION).get()
+    ]);
+
+    const categoriesMap = new Map(
+      categoriesSnapshot.docs.map(doc => [doc.id, doc.data().name])
+    );
+
+    const transactions = snapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        ...data,
+        amount: parseFloat(data.amount),
+        categoryName: categoriesMap.get(data.categoryId) || "Tidak Berkategori",
+        createdAt: data.createdAt instanceof Timestamp ? data.createdAt.toDate().toISOString() : data.createdAt
+      };
+    });
+
+    return res.json(transactions);
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Failed to fetch transactions" });
+  }
 });
 
 router.post("/transactions", requireAdmin, async (req, res) => {
@@ -56,60 +62,65 @@ router.post("/transactions", requireAdmin, async (req, res) => {
 
   const { amount, type, description, date, categoryId } = parsed.data;
   const dateStr = date instanceof Date ? date.toISOString().slice(0, 10) : String(date);
-  const [inserted] = await db
-    .insert(transactionsTable)
-    .values({ amount: String(amount), type, description, date: dateStr, categoryId: categoryId ?? null })
-    .returning();
+  
+  try {
+    const newTransaction = {
+      amount: String(amount),
+      type,
+      description,
+      date: dateStr,
+      categoryId: categoryId ? String(categoryId) : null,
+      createdAt: Timestamp.now()
+    };
 
-  const rows = await db
-    .select({
-      id: transactionsTable.id,
-      amount: transactionsTable.amount,
-      type: transactionsTable.type,
-      description: transactionsTable.description,
-      date: transactionsTable.date,
-      categoryId: transactionsTable.categoryId,
-      categoryName: categoriesTable.name,
-      createdAt: transactionsTable.createdAt,
-    })
-    .from(transactionsTable)
-    .leftJoin(categoriesTable, eq(transactionsTable.categoryId, categoriesTable.id))
-    .where(eq(transactionsTable.id, inserted.id));
+    const docRef = await db.collection(COLLECTION).add(newTransaction);
+    const [doc, categoryDoc] = await Promise.all([
+      docRef.get(),
+      categoryId ? db.collection(CATEGORIES_COLLECTION).doc(String(categoryId)).get() : null
+    ]);
 
-  const row = rows[0];
-  return res.status(201).json({ ...row, amount: parseFloat(row.amount) });
+    const data = doc.data()!;
+    return res.status(201).json({
+      id: doc.id,
+      ...data,
+      amount: parseFloat(data.amount),
+      categoryName: categoryDoc?.exists ? categoryDoc.data()?.name : "Tidak Berkategori",
+      createdAt: data.createdAt.toDate().toISOString()
+    });
+  } catch (error) {
+    return res.status(500).json({ error: "Failed to create transaction" });
+  }
 });
 
 router.get("/transactions/:id", async (req, res) => {
-  const parsed = GetTransactionParams.safeParse({ id: Number(req.params.id) });
-  if (!parsed.success) return res.status(400).json({ error: "Invalid id" });
+  const id = req.params.id;
+  try {
+    const doc = await db.collection(COLLECTION).doc(id).get();
+    if (!doc.exists) return res.status(404).json({ error: "Not found" });
 
-  const rows = await db
-    .select({
-      id: transactionsTable.id,
-      amount: transactionsTable.amount,
-      type: transactionsTable.type,
-      description: transactionsTable.description,
-      date: transactionsTable.date,
-      categoryId: transactionsTable.categoryId,
-      categoryName: categoriesTable.name,
-      createdAt: transactionsTable.createdAt,
-    })
-    .from(transactionsTable)
-    .leftJoin(categoriesTable, eq(transactionsTable.categoryId, categoriesTable.id))
-    .where(eq(transactionsTable.id, parsed.data.id));
+    const data = doc.data()!;
+    const categoryDoc = data.categoryId ? await db.collection(CATEGORIES_COLLECTION).doc(data.categoryId).get() : null;
 
-  if (!rows.length) return res.status(404).json({ error: "Not found" });
-  const row = rows[0];
-  return res.json({ ...row, amount: parseFloat(row.amount) });
+    return res.json({
+      id: doc.id,
+      ...data,
+      amount: parseFloat(data.amount),
+      categoryName: categoryDoc?.exists ? categoryDoc.data()?.name : "Tidak Berkategori",
+      createdAt: data.createdAt instanceof Timestamp ? data.createdAt.toDate().toISOString() : data.createdAt
+    });
+  } catch (error) {
+    return res.status(500).json({ error: "Failed to fetch transaction" });
+  }
 });
 
 router.delete("/transactions/:id", requireAdmin, async (req, res) => {
-  const parsed = DeleteTransactionParams.safeParse({ id: Number(req.params.id) });
-  if (!parsed.success) return res.status(400).json({ error: "Invalid id" });
-
-  await db.delete(transactionsTable).where(eq(transactionsTable.id, parsed.data.id));
-  return res.status(204).send();
+  const id = req.params.id;
+  try {
+    await db.collection(COLLECTION).doc(id).delete();
+    return res.status(204).send();
+  } catch (error) {
+    return res.status(500).json({ error: "Failed to delete transaction" });
+  }
 });
 
 export default router;
