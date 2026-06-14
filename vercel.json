@@ -1,14 +1,6 @@
 {
   "version": 2,
-  "builds": [
-    {
-      "src": "artifacts/finance-app/package.json",
-      "use": "@vercel/static-build",
-      "config": {
-        "distDir": "dist/public"
-      }
-    }
-  ],
+  "outputDirectory": "artifacts/finance-app/dist/public",
   "routes": [
     { "src": "/(.*)", "dest": "/index.html" }
   ]
