@@ -36,7 +36,7 @@ router.get("/transactions", async (req, res) => {
       categoriesSnapshot.docs.map(doc => [doc.id, doc.data().name])
     );
 
-    const transactions = snapshot.docs.map(doc => {
+    const transactions = snapshot.docs.map((doc: any) => {
       const data = doc.data();
       return {
         id: doc.id,
@@ -116,7 +116,7 @@ router.get("/transactions/:id", async (req, res) => {
 router.delete("/transactions/:id", requireAdmin, async (req, res) => {
   const id = req.params.id;
   try {
-    await db.collection(COLLECTION).doc(id).delete();
+    await db.collection(COLLECTION).doc(id as string).delete();
     return res.status(204).send();
   } catch (error) {
     return res.status(500).json({ error: "Failed to delete transaction" });

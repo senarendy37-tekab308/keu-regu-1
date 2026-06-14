@@ -16,7 +16,8 @@ export default function LoginPage({ onClose }: { onClose?: () => void }) {
     e.preventDefault();
     setError("");
     setIsLoading(true);
-    const result = await login(password);
+    const adminEmail = import.meta.env.VITE_ADMIN_EMAIL || "admin@keuangan.com";
+    const result = await login(adminEmail, password);
     setIsLoading(false);
     if (result.ok) {
       onClose?.();
