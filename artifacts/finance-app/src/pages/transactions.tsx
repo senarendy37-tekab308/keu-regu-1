@@ -49,7 +49,7 @@ export default function TransactionsPage() {
     }
   });
 
-  const filteredTransactions = transactions?.filter(tx => 
+  const filteredTransactions = transactions?.filter((tx: any) => 
     tx.description.toLowerCase().includes(search.toLowerCase()) || 
     (tx.categoryName && tx.categoryName.toLowerCase().includes(search.toLowerCase()))
   );
@@ -102,7 +102,7 @@ export default function TransactionsPage() {
           </div>
         ) : filteredTransactions && filteredTransactions.length > 0 ? (
           <div className="divide-y divide-border">
-            {filteredTransactions.map((tx) => (
+            {filteredTransactions.map((tx: any) => (
               <div
                 key={tx.id}
                 data-testid={`row-transaction-${tx.id}`}
